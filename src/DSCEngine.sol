@@ -34,6 +34,8 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__TokenAndPriceFeedAddressDiscrepancy();
     error DSCEngine__TokenNotAllowed();
     error DSCEngine__FailedTransfer();
+    error DSCEngine__HealthFactorBroken(uint256 healthFactor);
+    error DSCEngine__MintFailed();
 
     /*
      * State Variables ****
@@ -47,8 +49,9 @@ contract DSCEngine is ReentrancyGuard {
     address[] private s_collateralTokens; //An array that holds the addresses of the tokens that can be used as collateral
     uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10;
     uint256 private constant PRECISION = 1e18;
-    uint256 private constant LIQUIDATION_THRESHOLD = 50; //This means you need to be over 200% collateralized
+    uint256 private constant LIQUIDATION_THRESHOLD = 50; //This means you need to be over 200% collateralized or double the collateral then you havd stablecoins.
     uint256 private constant LIQUIDATION_PRECISION = 100;
+    uint256 private constant HEALTH_FACTOR_MIN = 1; //Minimum health factor score allowed before liquidation
 
     /*
      * Events ****
@@ -124,6 +127,13 @@ contract DSCEngine is ReentrancyGuard {
     function mintStableCoin(uint256 scMintAmount) external greaterThanZero(scMintAmount) {
         //mapping the amount of stable coin minted to the user that is minting
         s_SCMinted[msg.sender] += scMintAmount;
+        _IsHealthFactorBroken(msg.sender);
+        //Actually minting the stable coins
+        //Using the mint function from the decentralizedStableCoin contract
+        bool minted = i_dsc.mint(msg.sender, scMintAmount);
+        if (!minted) {
+            revert DSCEngine__MintFailed();
+        }
     }
 
     function burnStableCoin() external {}
@@ -145,13 +155,23 @@ contract DSCEngine is ReentrancyGuard {
 
     //This function will return how close to liquidation a user is
     //If the user goes below a health factor of 1, they can get liquidated
+    //Having 500 stable coins mean you must have atleast $1000 in eth or btc. If the value of the collateral goes below that, you can get liquidated
     function _healthFactor(address user) private view returns (uint256) {
         (uint256 totalSCMinted, uint256 collateralUSDValue) = _getAccountInfo(user);
-        uint256 collateralAdjustedForThreshold = (collateralUSDValue * LIQUIDATION_THRESHOLD) / 100;
+        uint256 collateralAdjustedForThreshold = (collateralUSDValue * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+
+        //EX: $1000 ETH / 100 stablecoins
+        //1000 * 50 = 50000 / 100 = (500 / 100)  <---This is what's returned
+        return (collateralAdjustedForThreshold * PRECISION) / totalSCMinted; //If less than one, can get liquidated
     }
 
     //This function checks if the health factor is broken and reverts if it is
-    function _IsHealthFactorBroken(address user) internal {}
+    function _IsHealthFactorBroken(address user) internal view {
+        uint256 healthFactorScore = _healthFactor(user);
+        if (healthFactorScore < HEALTH_FACTOR_MIN) {
+            revert DSCEngine__HealthFactorBroken(healthFactorScore);
+        }
+    }
 
     /*
      * Public and Enternal View Functions ****
