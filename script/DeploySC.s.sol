@@ -11,7 +11,7 @@ contract DeploySC is Script {
     address[] public tokenAddresses;
     address[] public priceFeedAddresses;
 
-    function run() external returns (decentralizedStableCoin, DSCEngine) {
+    function run() external returns (decentralizedStableCoin, DSCEngine, HelperConfig) {
         //creating a HelperConfig object to access the necessary infor for deploying the contracts
         HelperConfig config = new HelperConfig();
 
@@ -31,6 +31,7 @@ contract DeploySC is Script {
 
         //Transfering the ownership of the decentralizedStableCoin contract to the DSCEngin contract
         sc.transferOwnership(address(logicEngine));
-        vm.stopBroadcast;
+        vm.stopBroadcast();
+        return (sc, logicEngine, config);
     }
 }

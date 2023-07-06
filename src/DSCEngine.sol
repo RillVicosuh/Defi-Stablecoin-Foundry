@@ -36,6 +36,7 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__FailedTransfer();
     error DSCEngine__HealthFactorBroken(uint256 healthFactor);
     error DSCEngine__MintFailed();
+    error DSCEngine__HealthFactorGood();
 
     /*
      * State Variables ****
@@ -51,12 +52,13 @@ contract DSCEngine is ReentrancyGuard {
     uint256 private constant PRECISION = 1e18;
     uint256 private constant LIQUIDATION_THRESHOLD = 50; //This means you need to be over 200% collateralized or double the collateral then you havd stablecoins.
     uint256 private constant LIQUIDATION_PRECISION = 100;
-    uint256 private constant HEALTH_FACTOR_MIN = 1; //Minimum health factor score allowed before liquidation
+    uint256 private constant HEALTH_FACTOR_MIN = 1e18; //Minimum health factor score allowed before liquidation
 
     /*
      * Events ****
      */
     event CollateralDeposited(address indexed user, address indexed token, uint256 amount);
+    event CollateralRedeemed(address indexed user, address indexed token, uint256 indexed amount);
 
     /*
      * Modifiers ****
@@ -101,8 +103,69 @@ contract DSCEngine is ReentrancyGuard {
      * External Functions ****
      */
 
-    function depositCollateralAndMintStableCoin(address tokenCollateralAddress, uint256 collateralAmount)
+    //This function deposits collateral and minte the stable coins in one transaction
+    function depositCollateralAndMintStableCoin(
+        address tokenCollateralAddress,
+        uint256 collateralAmount,
+        uint256 scMintAmount
+    ) external {
+        depositCollateral(tokenCollateralAddress, collateralAmount);
+        mintStableCoin(scMintAmount);
+    }
+
+    //This function burns stable coins and redeems collateral in one transaction
+    function redeemCollateralForStableCoin(
+        address tokenCollateralAddress,
+        uint256 collateralAmount,
+        uint256 scBurnAmount
+    ) external {
+        burnStableCoin(scBurnAmount);
+        redeemCollateral(tokenCollateralAddress, collateralAmount);
+    }
+
+    //This function allows a user to take out their collateral
+    //The health factor must remain above 1 after the collateral is redeemed, or else the transaction will be reverted
+    function redeemCollateral(address tokenCollateralAddress, uint256 collateralAmount)
+        public
+        greaterThanZero(collateralAmount)
+        nonReentrant
+    {
+        //Removing the amount of collateral the user has in this contract
+        s_collateralDeposited[msg.sender][tokenCollateralAddress] -= collateralAmount;
+        emit CollateralRedeemed(msg.sender, tokenCollateralAddress, collateralAmount);
+        //Transfering the collateral to the user
+        bool success = IERC20(tokenCollateralAddress).transfer(msg.sender, collateralAmount);
+        if (!success) {
+            revert DSCEngine__FailedTransfer();
+        }
+        //Need to check if health factor is still 1 after removing collateral
+        _IsHealthFactorBroken(msg.sender);
+    }
+
+    //This function allows a user to liquidate another user if their healthfactor has gone below 1.
+    /*
+        - A user can be partially liquidated
+        - Users will be incentivized with a liquidation bonus to liquidate another user
+        - The protocol should be about 200% overcollateralized for it to work
+        - If the protocol were 100% collateralized, there would be no liquidation bonus/incentive for users
+    */
+    function liquidate(address tokenCollateralAddress, address user, uint256 debtToCover)
         external
+        greaterThanZero(debtToCover)
+        nonReentrant
+    {
+        //Ensuring health factor is actually below 1 in order for them to be liquidated
+        uint256 initialUserHealthFactor = _healthFactor(user);
+        if (initialUserHealthFactor >= HEALTH_FACTOR_MIN) {
+            revert DSCEngine__HealthFactorGood();
+        }
+    }
+
+    /*
+     * Public Functions ****
+     */
+    function depositCollateral(address tokenCollateralAddress, uint256 collateralAmount)
+        public
         greaterThanZero(collateralAmount)
         isTokenAllowd(tokenCollateralAddress)
         nonReentrant
@@ -118,13 +181,9 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
-    function depositCollateral() external {}
-
-    function redeemCollateralForStableCoin() external {}
-
     //This will be can be used after collateral has been deposited
     //If a user has 100 in WETH deposited as collateral, they can only mint 75 stable coins for $75 or whatever depending on the threshold
-    function mintStableCoin(uint256 scMintAmount) external greaterThanZero(scMintAmount) {
+    function mintStableCoin(uint256 scMintAmount) public greaterThanZero(scMintAmount) nonReentrant {
         //mapping the amount of stable coin minted to the user that is minting
         s_SCMinted[msg.sender] += scMintAmount;
         _IsHealthFactorBroken(msg.sender);
@@ -136,11 +195,22 @@ contract DSCEngine is ReentrancyGuard {
         }
     }
 
-    function burnStableCoin() external {}
+    function burnStableCoin(uint256 amount) public greaterThanZero(amount) {
+        s_SCMinted[msg.sender] -= amount;
+        //Transfering from the users address to the decentralized stable coin address
+        bool success = i_dsc.transferFrom(msg.sender, address(this), amount);
+        if (!success) {
+            revert DSCEngine__FailedTransfer();
+        }
+        //burning the amount of stable coin that was transfered
+        i_dsc.burn(amount);
+        //We don't really need to check, but doesn't hurt to be safe
+        _IsHealthFactorBroken(msg.sender);
+    }
 
-    function liquidate() external {}
-
-    function getHealthFactor() external view {}
+    /*
+     * Private Functions ****
+     */
 
     /*
      * Private and Internal View Functions ****
@@ -174,7 +244,7 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     /*
-     * Public and Enternal View Functions ****
+     * Public and Internal View Functions ****
      */
 
     //Given a users address, this function gets the tokens they deposited as collateral and the amount, then calculates the USD value of the collateral using the getUSDValue function
@@ -191,12 +261,28 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     //This function uses the ChainLink price feed using the AggregatorV3Interface to calculate a give token and its amount into a USD value
-    function getUSDValue(address token, uint256 amount) public view returns (uint256) {
+    function getUSDValue(address tokenAddress, uint256 amount) public view returns (uint256) {
         //Getting the chainlink price feed of the collateral token using the mapping of the price feed address to the token address
         //The price feed address needs to be for ETH/USD and BTC/USD
-        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[tokenAddress]);
         //Calling the latestRoundData function using the price feed object and only getting the price return variable
         (, int256 price,,,) = priceFeed.latestRoundData(); //Currently ETH is $1950 and it would return 1950 * 1e18 (the gwei amount)
         return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
     }
+
+    /*
+     * Public and External View Functions ****
+     */
+
+    function getTokenAmountFromUsd(address tokenAddress, uint256 usdAmountInWei) public view returns (uint256) {
+        //Uisng the AggregatorV3Interface to get the current price of either ETH or BTC
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[tokenAddress]);
+        //
+        (, int256 price,,,) = priceFeed.lastestRoundData();
+        //If if the usd amount is $10 it would look like...
+        //($10e18 * 1e18 / ($2000e8 * 1e10))  <--- This is what's returned
+        return (usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONAL_FEED_PRECISION);
+    }
+
+    function getHealthFactor() external view {}
 }
