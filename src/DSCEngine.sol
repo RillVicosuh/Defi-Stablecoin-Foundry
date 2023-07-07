@@ -37,6 +37,7 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__HealthFactorBroken(uint256 healthFactor);
     error DSCEngine__MintFailed();
     error DSCEngine__HealthFactorGood();
+    error DSCEngine__HealthFactorNotImproved();
 
     /*
      * State Variables ****
@@ -53,12 +54,15 @@ contract DSCEngine is ReentrancyGuard {
     uint256 private constant LIQUIDATION_THRESHOLD = 50; //This means you need to be over 200% collateralized or double the collateral then you havd stablecoins.
     uint256 private constant LIQUIDATION_PRECISION = 100;
     uint256 private constant HEALTH_FACTOR_MIN = 1e18; //Minimum health factor score allowed before liquidation
+    uint256 private constant LIQUIDATION_BONUS = 10; //A 10% bonus for liquidating
 
     /*
      * Events ****
      */
     event CollateralDeposited(address indexed user, address indexed token, uint256 amount);
-    event CollateralRedeemed(address indexed user, address indexed token, uint256 indexed amount);
+    event CollateralRedeemed(
+        address indexed redeemedFrom, address indexed redeemedTo, address indexed token, uint256 amount
+    );
 
     /*
      * Modifiers ****
@@ -130,14 +134,7 @@ contract DSCEngine is ReentrancyGuard {
         greaterThanZero(collateralAmount)
         nonReentrant
     {
-        //Removing the amount of collateral the user has in this contract
-        s_collateralDeposited[msg.sender][tokenCollateralAddress] -= collateralAmount;
-        emit CollateralRedeemed(msg.sender, tokenCollateralAddress, collateralAmount);
-        //Transfering the collateral to the user
-        bool success = IERC20(tokenCollateralAddress).transfer(msg.sender, collateralAmount);
-        if (!success) {
-            revert DSCEngine__FailedTransfer();
-        }
+        _redeemCollateral(tokenCollateralAddress, collateralAmount, msg.sender, msg.sender);
         //Need to check if health factor is still 1 after removing collateral
         _IsHealthFactorBroken(msg.sender);
     }
@@ -159,6 +156,29 @@ contract DSCEngine is ReentrancyGuard {
         if (initialUserHealthFactor >= HEALTH_FACTOR_MIN) {
             revert DSCEngine__HealthFactorGood();
         }
+
+        //Converting the amount of debt to be covered, lets say $50, into a token amount, either ETH or BTC
+        //EX: User to be liquidated: $150 ETH, $110 stable coin
+        //    debtToCover: $110
+        //    $110 of stable coin == 0.055 ETH if ETH is $2000
+        uint256 debtCoveredConvertedToToken = getTokenAmountFromUsd(tokenCollateralAddress, debtToCover);
+        //If debtToCover is $110 or 0.055 ETH, then the bonus will be (0.055 * 10)/ 100 = 0.0055 ETH as a bonus for liquidating
+        uint256 collateralBonus = (debtCoveredConvertedToToken * LIQUIDATION_BONUS) / LIQUIDATION_PRECISION;
+        //This will be the total amount in ETH or BTC that the user will recieve, which is the amount they covered + the bonus for liquidating
+        //In the example case: 0.05ETH + 0.0055ETH = 0.0555ETH that they will recieve
+        uint256 collateralToRedeem = debtCoveredConvertedToToken + collateralBonus;
+        //The user who liquidates will receive the collateralToRedeem from the user that is being liqiudated
+        _redeemCollateral(tokenCollateralAddress, collateralToRedeem, user, msg.sender);
+        //Finally, we need to burn the stable coin that the liquidator covered to
+        _burnStableCoin(debtToCover, user, msg.sender);
+
+        //If the health factor of the user being liquidated did not improve, then revert
+        uint256 updatedUserHealthFactor = _healthFactor(user);
+        if (updatedUserHealthFactor <= initialUserHealthFactor) {
+            revert DSCEngine__HealthFactorNotImproved();
+        }
+        //We also want to check that the health factor of the liquidator did not go below 1
+        _IsHealthFactorBroken(msg.sender);
     }
 
     /*
@@ -196,14 +216,7 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     function burnStableCoin(uint256 amount) public greaterThanZero(amount) {
-        s_SCMinted[msg.sender] -= amount;
-        //Transfering from the users address to the decentralized stable coin address
-        bool success = i_dsc.transferFrom(msg.sender, address(this), amount);
-        if (!success) {
-            revert DSCEngine__FailedTransfer();
-        }
-        //burning the amount of stable coin that was transfered
-        i_dsc.burn(amount);
+        _burnStableCoin(amount, msg.sender, msg.sender);
         //We don't really need to check, but doesn't hurt to be safe
         _IsHealthFactorBroken(msg.sender);
     }
@@ -215,6 +228,30 @@ contract DSCEngine is ReentrancyGuard {
     /*
      * Private and Internal View Functions ****
      */
+
+    function _burnStableCoin(uint256 scBurnAmount, address onBehalfOf, address stableCoinFrom) private {
+        s_SCMinted[onBehalfOf] -= scBurnAmount;
+        //Transfering from the users address to the decentralized stable coin address
+        bool success = i_dsc.transferFrom(stableCoinFrom, address(this), scBurnAmount);
+        if (!success) {
+            revert DSCEngine__FailedTransfer();
+        }
+        //burning the amount of stable coin that was transfered
+        i_dsc.burn(scBurnAmount);
+    }
+
+    function _redeemCollateral(address tokenCollateralAddress, uint256 collateralAmount, address from, address to)
+        private
+    {
+        //Removing the amount of collateral the user has in this contract
+        s_collateralDeposited[from][tokenCollateralAddress] -= collateralAmount;
+        emit CollateralRedeemed(from, to, tokenCollateralAddress, collateralAmount);
+        //Transfering the collateral to the user
+        bool success = IERC20(tokenCollateralAddress).transfer(to, collateralAmount);
+        if (!success) {
+            revert DSCEngine__FailedTransfer();
+        }
+    }
 
     //This function return the total amount of stable coins minted and the value of the collateral the user has, in USD
     function _getAccountInfo(address user) private view returns (uint256 totalSCMinted, uint256 collateralUSDValue) {
@@ -277,11 +314,14 @@ contract DSCEngine is ReentrancyGuard {
     function getTokenAmountFromUsd(address tokenAddress, uint256 usdAmountInWei) public view returns (uint256) {
         //Uisng the AggregatorV3Interface to get the current price of either ETH or BTC
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[tokenAddress]);
-        //
-        (, int256 price,,,) = priceFeed.lastestRoundData();
+        (, int256 price,,,) = priceFeed.latestRoundData();
         //If if the usd amount is $10 it would look like...
         //($10e18 * 1e18 / ($2000e8 * 1e10))  <--- This is what's returned
         return (usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONAL_FEED_PRECISION);
+    }
+
+    function getAccountInfo(address user) external view returns (uint256 totalSCMinted, uint256 collaterUsdValue) {
+        (totalSCMinted, collaterUsdValue) = _getAccountInfo(user);
     }
 
     function getHealthFactor() external view {}

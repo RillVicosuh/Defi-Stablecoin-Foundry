@@ -17,7 +17,10 @@ contract DSCEngineTest is Test {
     DSCEngine logicEngine;
     HelperConfig config;
     address wEthUsdPriceFeed;
+    address wBtcUsdPriceFeed;
     address wEth;
+    address wBtc;
+    uint256 deployerKey;
 
     address public USER = makeAddr("user");
     uint256 public constant COLLATERAL_AMOUNT = 10 ether;
@@ -25,13 +28,34 @@ contract DSCEngineTest is Test {
     function setUp() public {
         deployer = new DeploySC();
         (sc, logicEngine, config) = deployer.run();
-        (wEthUsdPriceFeed,, wEth,,) = config.activeNetworkConfig();
+        (wEthUsdPriceFeed, wBtcUsdPriceFeed, wEth, wBtc, deployerKey) = config.activeNetworkConfig();
+    }
+
+    /*
+     * Constructor Tests ****
+     */
+
+    address[] public tokenAddresses;
+    address[] public priceFeedAddresses;
+
+    //This function ensures that constructor only takes to address arrays of the same length
+    function testRevertsIfTokenLengthDoesntMatchPriceFeed() public {
+        //The constructor takes an array of token addresses and price feed addresses
+        //The two arrays need to be the same length
+        tokenAddresses.push(wEth);
+        priceFeedAddresses.push(wEthUsdPriceFeed);
+        priceFeedAddresses.push(wBtcUsdPriceFeed);
+
+        vm.expectRevert(DSCEngine.DSCEngine__TokenAndPriceFeedAddressDiscrepancy.selector); //This is the specific error we expect
+        //I expect the following line to revert because two addresses of different length are being passed to the constructor
+        new DSCEngine(tokenAddresses, priceFeedAddresses, address(sc));
     }
 
     /*
      * Price Tests ****
      */
 
+    //This function ensures that the getUsdValue function works properly, giving the usd value of a certain amount of eth or btc
     function testGetUsdValue() public {
         uint256 ethAmount = 15e18; //15 WETH
         //This test will be run on the anvil local blockchain, so it will use an ETH value of $2000/ETH
@@ -41,15 +65,53 @@ contract DSCEngineTest is Test {
         assertEq(expectedUsd, actualUsd);
     }
 
+    //This function ensure that the getTokenAmountFromUsd function works properly, giving the token value, in this case eth, of a certain amount of usd
+    function testGetTokenAmountFromUsd() public {
+        uint256 usdAmount = 100 ether;
+        uint256 expectWEth = 0.05 ether;
+        uint256 actualWEth = logicEngine.getTokenAmountFromUsd(wEth, usdAmount);
+        //Expected WETh and the acutal calculated WEth using the getTokenAmountFromUsd function are identical
+        assertEq(expectWEth, actualWEth);
+    }
+
     /*
      * depositCollateral Tests ****
      */
 
+    //This function ensures that if a user tries to deposit 0 collateral, it reverts
     function testRevertIfCollateralZero() public {
         vm.startPrank(USER);
-        ERC20Mock(wEth).approve(address(sc), COLLATERAL_AMOUNT);
+        ERC20Mock(wEth).approve(address(logicEngine), COLLATERAL_AMOUNT);
         vm.expectRevert(DSCEngine.DSCEngine__MustBeMoreThanZero.selector);
-        sc.depositCollateral(wEth, 0);
+        //I expect the following line to be reverted because the collateral amount a user deposits cannot be 0
+        logicEngine.depositCollateral(wEth, 0);
         vm.stopPrank();
+    }
+
+    //This function ensures that user cannot try to deposit an unallowed token as collateral
+    function testRevertIfTokenIsNotAllowed() public {
+        //Creating a random token with the ERC20Mock contract
+        ERC20Mock randomToken = new ERC20Mock("RANDO", "RANDO", USER, COLLATERAL_AMOUNT);
+        vm.startPrank(USER);
+        vm.expectRevert(DSCEngine.DSCEngine__TokenNotAllowed.selector);
+        //We are using a random token with a random address and not WETH or WBTC, so it should revert
+        logicEngine.depositCollateral(address(randomToken), COLLATERAL_AMOUNT);
+        vm.stopPrank;
+    }
+
+    modifier collateralDeposited() {
+        vm.startPrank(USER);
+        ERC20Mock(wEth).approve(address(logicEngine), COLLATERAL_AMOUNT);
+        logicEngine.depositCollateral(wEth, COLLATERAL_AMOUNT);
+        vm.stopPrank();
+        _;
+    }
+
+    function testCanDepositCollateralAndGetAccountInfo() public collateralDeposited {
+        (uint256 totalSCMinted, uint256 collateralUsdValue) = logicEngine.getAccountInfo(USER);
+        uint256 expectedTotalSCMinted = 0;
+        uint256 expectedCollateralUsdValue = logicEngine.getTokenAmountFromUsd(wEth, collateralUsdValue);
+        assertEq(totalSCMinted, expectedTotalSCMinted);
+        assertEq(collateralUsdValue, expectedCollateralUsdValue);
     }
 }
