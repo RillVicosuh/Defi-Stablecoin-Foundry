@@ -23,12 +23,21 @@ contract DSCEngineTest is Test {
     uint256 deployerKey;
 
     address public USER = makeAddr("user");
-    uint256 public constant COLLATERAL_AMOUNT = 10 ether;
+    uint256 public constant COLLATERAL_AMOUNT = 1 ether;
+    uint256 public STARTING_USER_BALANCE = 100 ether;
 
+    //This setup function runs before every test
     function setUp() public {
         deployer = new DeploySC();
         (sc, logicEngine, config) = deployer.run();
         (wEthUsdPriceFeed, wBtcUsdPriceFeed, wEth, wBtc, deployerKey) = config.activeNetworkConfig();
+
+        //Minting 100 WETH AND WBTC to the USER address for testing if the we are using a local blockchain
+        if (block.chainid == 31337) {
+            vm.deal(USER, STARTING_USER_BALANCE);
+        }
+        ERC20Mock(wEth).mint(USER, STARTING_USER_BALANCE);
+        ERC20Mock(wBtc).mint(USER, STARTING_USER_BALANCE);
     }
 
     /*
@@ -38,7 +47,7 @@ contract DSCEngineTest is Test {
     address[] public tokenAddresses;
     address[] public priceFeedAddresses;
 
-    //This function ensures that constructor only takes to address arrays of the same length
+    //This test function ensures that constructor only takes to address arrays of the same length
     function testRevertsIfTokenLengthDoesntMatchPriceFeed() public {
         //The constructor takes an array of token addresses and price feed addresses
         //The two arrays need to be the same length
@@ -55,7 +64,7 @@ contract DSCEngineTest is Test {
      * Price Tests ****
      */
 
-    //This function ensures that the getUsdValue function works properly, giving the usd value of a certain amount of eth or btc
+    //This test function ensures that the getUsdValue function works properly, giving the usd value of a certain amount of eth or btc
     function testGetUsdValue() public {
         uint256 ethAmount = 15e18; //15 WETH
         //This test will be run on the anvil local blockchain, so it will use an ETH value of $2000/ETH
@@ -65,7 +74,7 @@ contract DSCEngineTest is Test {
         assertEq(expectedUsd, actualUsd);
     }
 
-    //This function ensure that the getTokenAmountFromUsd function works properly, giving the token value, in this case eth, of a certain amount of usd
+    //This test function ensure that the getTokenAmountFromUsd function works properly, giving the token value, in this case eth, of a certain amount of usd
     function testGetTokenAmountFromUsd() public {
         uint256 usdAmount = 100 ether;
         uint256 expectWEth = 0.05 ether;
@@ -78,7 +87,7 @@ contract DSCEngineTest is Test {
      * depositCollateral Tests ****
      */
 
-    //This function ensures that if a user tries to deposit 0 collateral, it reverts
+    //This test function ensures that if a user tries to deposit 0 collateral, it reverts
     function testRevertIfCollateralZero() public {
         vm.startPrank(USER);
         ERC20Mock(wEth).approve(address(logicEngine), COLLATERAL_AMOUNT);
@@ -88,7 +97,7 @@ contract DSCEngineTest is Test {
         vm.stopPrank();
     }
 
-    //This function ensures that user cannot try to deposit an unallowed token as collateral
+    //This test function ensures that user cannot try to deposit an unallowed token as collateral
     function testRevertIfTokenIsNotAllowed() public {
         //Creating a random token with the ERC20Mock contract
         ERC20Mock randomToken = new ERC20Mock("RANDO", "RANDO", USER, COLLATERAL_AMOUNT);
@@ -99,6 +108,7 @@ contract DSCEngineTest is Test {
         vm.stopPrank;
     }
 
+    //This is a modifier that can be added to a test function to deposit collateral before the execution of the function
     modifier collateralDeposited() {
         vm.startPrank(USER);
         ERC20Mock(wEth).approve(address(logicEngine), COLLATERAL_AMOUNT);
@@ -107,11 +117,15 @@ contract DSCEngineTest is Test {
         _;
     }
 
+    //This test function checks to see if we can first deposit collateral and then get the account info, which include the amount of stable coin minted and the total collateral value in WETH
     function testCanDepositCollateralAndGetAccountInfo() public collateralDeposited {
+        //After depositing collateral, get the users info
         (uint256 totalSCMinted, uint256 collateralUsdValue) = logicEngine.getAccountInfo(USER);
         uint256 expectedTotalSCMinted = 0;
-        uint256 expectedCollateralUsdValue = logicEngine.getTokenAmountFromUsd(wEth, collateralUsdValue);
+        uint256 expectedWEthAmount = logicEngine.getTokenAmountFromUsd(wEth, collateralUsdValue);
+        //Both should be 0 because no stable coin was minted
         assertEq(totalSCMinted, expectedTotalSCMinted);
-        assertEq(collateralUsdValue, expectedCollateralUsdValue);
+        //Both should be 10 ether
+        assertEq(COLLATERAL_AMOUNT, expectedWEthAmount);
     }
 }

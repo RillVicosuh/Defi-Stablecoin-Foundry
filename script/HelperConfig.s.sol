@@ -52,9 +52,9 @@ contract HelperConfig is Script {
 
         vm.startBroadcast();
         MockV3Aggregator mockEthUsdPriceFeed = new MockV3Aggregator( DECIMALS, ETH_USD_PRICE);
-        ERC20Mock mockWEth = new ERC20Mock("WETH", "WETH", msg.sender, 1000e8);
+        ERC20Mock mockWEth = new ERC20Mock("WETH", "WETH", msg.sender, 100e18);
         MockV3Aggregator mockBtcUsdPriceFeed = new MockV3Aggregator( DECIMALS, ETH_USD_PRICE);
-        ERC20Mock mockWBtc = new ERC20Mock("WETH", "WETH", msg.sender, 1000e8);
+        ERC20Mock mockWBtc = new ERC20Mock("WETH", "WETH", msg.sender, 100e18);
         vm.stopBroadcast();
 
         return NetworkConfig({
