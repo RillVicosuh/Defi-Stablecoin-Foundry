@@ -6,7 +6,8 @@ import {decentralizedStableCoin} from "./decentralizedStableCoin.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol"; //Allows us to use the reentrancy modifier
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
-
+import {OracleLib} from "./libraries/OracleLib.sol";
+import {Test, console} from "forge-std/Test.sol";
 /*
     @title DSCEngine
     @author Ricardo Villcana
@@ -38,6 +39,11 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__MintFailed();
     error DSCEngine__HealthFactorGood();
     error DSCEngine__HealthFactorNotImproved();
+
+    /*
+     * Type ****
+     */
+    using OracleLib for AggregatorV3Interface;
 
     /*
      * State Variables ****
@@ -163,10 +169,12 @@ contract DSCEngine is ReentrancyGuard {
         //    $110 of stable coin == 0.055 ETH if ETH is $2000
         uint256 debtCoveredConvertedToToken = getTokenAmountFromUsd(tokenCollateralAddress, debtToCover);
         //If debtToCover is $110 or 0.055 ETH, then the bonus will be (0.055 * 10)/ 100 = 0.0055 ETH as a bonus for liquidating
-        uint256 collateralBonus = (debtCoveredConvertedToToken * LIQUIDATION_BONUS) / LIQUIDATION_PRECISION;
+        uint256 collateralBonus = (debtCoveredConvertedToToken * LIQUIDATION_BONUS) / 100;
+        console.log("collateralBonus: %s", collateralBonus);
         //This will be the total amount in ETH or BTC that the user will recieve, which is the amount they covered + the bonus for liquidating
         //In the example case: 0.05ETH + 0.0055ETH = 0.0555ETH that they will recieve
         uint256 collateralToRedeem = debtCoveredConvertedToToken + collateralBonus;
+        console.log("collateralToRedeem: %s", collateralToRedeem);
         //The user who liquidates will receive the collateralToRedeem from the user that is being liqiudated
         _redeemCollateral(tokenCollateralAddress, collateralToRedeem, user, msg.sender);
         //Finally, we need to burn the stable coin that the liquidator covered to
@@ -265,6 +273,7 @@ contract DSCEngine is ReentrancyGuard {
     //Having 500 stable coins mean you must have atleast $1000 in eth or btc. If the value of the collateral goes below that, you can get liquidated
     function _healthFactor(address user) private view returns (uint256) {
         (uint256 totalSCMinted, uint256 collateralUSDValue) = _getAccountInfo(user);
+        if (totalSCMinted == 0) return type(uint256).max;
         uint256 collateralAdjustedForThreshold = (collateralUSDValue * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
 
         //EX: $1000 ETH / 100 stablecoins
@@ -303,18 +312,26 @@ contract DSCEngine is ReentrancyGuard {
         //The price feed address needs to be for ETH/USD and BTC/USD
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[tokenAddress]);
         //Calling the latestRoundData function using the price feed object and only getting the price return variable
-        (, int256 price,,,) = priceFeed.latestRoundData(); //Currently ETH is $1950 and it would return 1950 * 1e18 (the gwei amount)
+        //(, int256 price,,,) = priceFeed.latestRoundData(); //Currently ETH is $1950 and it would return 1950 * 1e18 (the gwei amount)
+
+        //Using the stagnantCheckLatestRoundData() instead, which we wrote in the OracleLib that we imported
+        //In addition to getting the price with, it also checks to see if the price has been updated recently and reverts if it has not
+        (, int256 price,,,) = priceFeed.stagnantCheckLatestRoundData();
         return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
     }
 
     /*
-     * Public and External View Functions ****
+     * Public and External View and Pure Functions ****
      */
 
     function getTokenAmountFromUsd(address tokenAddress, uint256 usdAmountInWei) public view returns (uint256) {
-        //Uisng the AggregatorV3Interface to get the current price of either ETH or BTC
+        //Using the AggregatorV3Interface to get the current price of either ETH or BTC
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[tokenAddress]);
-        (, int256 price,,,) = priceFeed.latestRoundData();
+        //(, int256 price,,,) = priceFeed.latestRoundData();
+
+        //Using the stagnantCheckLatestRoundData() instead, which we wrote in the OracleLib that we imported
+        //In addition to getting the price with, it also checks to see if the price has been updated recently and reverts if it has not
+        (, int256 price,,,) = priceFeed.stagnantCheckLatestRoundData();
         //If if the usd amount is $10 it would look like...
         //($10e18 * 1e18 / ($2000e8 * 1e10))  <--- This is what's returned
         return (usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONAL_FEED_PRECISION);
@@ -332,5 +349,35 @@ contract DSCEngine is ReentrancyGuard {
         return s_collateralDeposited[user][token];
     }
 
-    function getHealthFactor() external view {}
+    function getPrecision() external pure returns (uint256) {
+        return PRECISION;
+    }
+
+    function getAdditionalFeedPrecision() external pure returns (uint256) {
+        return ADDITIONAL_FEED_PRECISION;
+    }
+
+    function getLiquidationThreshold() external pure returns (uint256) {
+        return LIQUIDATION_THRESHOLD;
+    }
+
+    function getLiquidationBonus() external pure returns (uint256) {
+        return LIQUIDATION_BONUS;
+    }
+
+    function getHealthFactorMin() external pure returns (uint256) {
+        return HEALTH_FACTOR_MIN;
+    }
+
+    function getStableCoinContract() external view returns (address) {
+        return address(i_dsc);
+    }
+
+    function getCollateralTokenPriceFeed(address token) external view returns (address) {
+        return s_priceFeeds[token];
+    }
+
+    function getHealthFactor(address user) external view returns (uint256) {
+        return _healthFactor(user);
+    }
 }

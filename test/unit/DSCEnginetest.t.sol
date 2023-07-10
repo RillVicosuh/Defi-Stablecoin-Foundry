@@ -10,6 +10,8 @@ import {decentralizedStableCoin} from "../../src/decentralizedStableCoin.sol";
 import {DSCEngine} from "../../src/DSCEngine.sol";
 import {HelperConfig} from "../../script/HelperConfig.s.sol";
 import {ERC20Mock} from "@openzeppelin/contracts/mocks/ERC20Mock.sol";
+import {MockV3Aggregator} from "../../test/mocks/MockV3Aggregator.sol";
+import {Test, console} from "forge-std/Test.sol";
 
 contract DSCEngineTest is Test {
     DeploySC deployer;
@@ -23,7 +25,10 @@ contract DSCEngineTest is Test {
     uint256 deployerKey;
 
     address public USER = makeAddr("user");
-    uint256 public constant COLLATERAL_AMOUNT = 1 ether;
+    address public LIQUIDATOR = makeAddr("liquidator");
+    uint256 public constant COLLATERAL_AMOUNT = 10 ether;
+    uint256 public constant COLLATERAL_TO_COVER = 20 ether;
+    uint256 public constant MINT_AMOUNT = 100 ether;
     uint256 public STARTING_USER_BALANCE = 100 ether;
 
     //This setup function runs before every test
@@ -127,5 +132,67 @@ contract DSCEngineTest is Test {
         assertEq(totalSCMinted, expectedTotalSCMinted);
         //Both should be 10 ether
         assertEq(COLLATERAL_AMOUNT, expectedWEthAmount);
+    }
+
+    /*
+     * Liquidation Tests ****
+     */
+    modifier liquidated() {
+        vm.startPrank(USER);
+        //Approving collateral and depositing it, then minting stable coin
+        ERC20Mock(wEth).approve(address(logicEngine), COLLATERAL_AMOUNT);
+        logicEngine.depositCollateralAndMintStableCoin(wEth, COLLATERAL_AMOUNT, MINT_AMOUNT);
+        vm.stopPrank();
+        //Changing the price of ETH to $18 so that we can liquidate
+        int256 wEthUsdUpdatedPrice = 18e8;
+        MockV3Aggregator(wEthUsdPriceFeed).updateAnswer(wEthUsdUpdatedPrice);
+        //Get health factor after changing eth price
+        uint256 userHealthFactor = logicEngine.getHealthFactor(USER);
+
+        ERC20Mock(wEth).mint(LIQUIDATOR, COLLATERAL_TO_COVER);
+        vm.startPrank(LIQUIDATOR);
+        console.log("working");
+        ERC20Mock(wEth).approve(address(logicEngine), COLLATERAL_TO_COVER);
+        //Depositing 20 ether of collateral and minting 10 ether worth of stable coin
+        logicEngine.depositCollateralAndMintStableCoin(wEth, COLLATERAL_TO_COVER, MINT_AMOUNT);
+        sc.approve(address(logicEngine), MINT_AMOUNT);
+        logicEngine.liquidate(wEth, USER, MINT_AMOUNT);
+        _;
+    }
+
+    function testliquidationPayoutIsCorrect() public liquidated {
+        uint256 liquidatorWethBalance = ERC20Mock(wEth).balanceOf(LIQUIDATOR);
+        uint256 expectedWEth = logicEngine.getTokenAmountFromUsd(wEth, MINT_AMOUNT)
+            + (logicEngine.getTokenAmountFromUsd(wEth, MINT_AMOUNT) / logicEngine.getLiquidationBonus());
+        console.log("liquidatorWethBalance: %s", liquidatorWethBalance);
+        console.log("expectedWEth: %s", expectedWEth);
+        assertEq(liquidatorWethBalance, expectedWEth);
+    }
+
+    function testLiquidatorTakesOnUsersDebt() public liquidated {
+        (uint256 liquidatorSCMinted,) = logicEngine.getAccountInfo(LIQUIDATOR);
+        assertEq(liquidatorSCMinted, MINT_AMOUNT);
+    }
+
+    //This test function ensures that a user does not have any stable coin left after being liquidated
+    function testUserHasNoMoreDebt() public liquidated {
+        (uint256 userSCMinted,) = logicEngine.getAccountInfo(USER);
+        assertEq(userSCMinted, 0);
+    }
+
+    /*
+     * View Tests ****
+     */
+
+    //This test function ensures the the stable coin address can be returned
+    function testGetStableCoinAddress() public {
+        address scAddress = logicEngine.getStableCoinContract();
+        assertEq(address(sc), scAddress);
+    }
+    //This test function ensures that the price feed address can be retrieved
+
+    function testGetCollateralTokenPriceFeed() public {
+        address priceFeed = logicEngine.getCollateralTokenPriceFeed(wEth);
+        assertEq(priceFeed, wEthUsdPriceFeed);
     }
 }

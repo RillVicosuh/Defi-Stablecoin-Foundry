@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {decentralizedStableCoin} from "../../src/decentralizedStableCoin.sol";
 import {DSCEngine} from "../../src/DSCEngine.sol";
 import {ERC20Mock} from "@openzeppelin/contracts/mocks/ERC20Mock.sol";
+import {MockV3Aggregator} from "../../test/mocks/MockV3Aggregator.sol";
 
 contract Handler is Test {
     DSCEngine logicEngine;
@@ -12,6 +13,7 @@ contract Handler is Test {
 
     ERC20Mock wEth;
     ERC20Mock wBtc;
+    MockV3Aggregator wEthUsdPriceFeed;
 
     //We are assigning the largest number that can be stored in a uint96 variable, which is large, but not as large as uint256
     uint256 MAX_DEPOSIT_SIZE = type(uint96).max;
@@ -25,6 +27,8 @@ contract Handler is Test {
         address[] memory collateralTokens = logicEngine.getCollateralTokens();
         wEth = ERC20Mock(collateralTokens[0]);
         wBtc = ERC20Mock(collateralTokens[1]);
+
+        wEthUsdPriceFeed = MockV3Aggregator(logicEngine.getCollateralTokenPriceFeed(address(wEth)));
     }
 
     //This invariant test will help test the mintStableCoin function with random stable coin mint amounts and random accounts with different amounts of collateral
@@ -35,7 +39,7 @@ contract Handler is Test {
             return;
         }
         //Making sure the amount of stable coin to mint is limited from 1 to the max amount stable coin they can mint
-        scMintAmount = bound(scMintAmount, 1, MAX_DEPOSIT_SIZE);
+        scMintAmount = bound(scMintAmount, 1, uint256(maxSCToMint));
         //Do not mint if the amount of stable coin that can be minted is 0
         if (scMintAmount == 0) {
             return;
@@ -75,6 +79,13 @@ contract Handler is Test {
         }
         logicEngine.redeemCollateral(address(collateralToken), collateralAmount);
     }
+
+    //This breaks the invariant that system should always be overcollateralized
+    //This function allows the Mock WETH price to be updated to different values
+    /*function updateCollateralTokenPrice(uint96 updatedPrice) public {
+        int256 updatedPriceInt = int256(uint256(updatedPrice));
+        wEthUsdPriceFeed.updateAnswer(updatedPriceInt);
+    }*/
 
     //This function will be used in the test function above to ensure that we will always test the depositCollateral function with a valid token address
     function _getCollateralAddressFromSeed(uint256 collateralSeed) private view returns (ERC20Mock) {
