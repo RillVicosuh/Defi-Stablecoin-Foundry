@@ -1,6 +1,8 @@
 //SPDX-License-Identifier: MIT
 pragma solidity ^0.8.18;
 
+//Run with --> make deploy ARGS="--network sepolia"
+
 import {Script} from "forge-std/Script.sol";
 import {decentralizedStableCoin} from "../src/decentralizedStableCoin.sol";
 import {DSCEngine} from "../src/DSCEngine.sol";

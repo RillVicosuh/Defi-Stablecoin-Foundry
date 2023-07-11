@@ -19,7 +19,7 @@ contract decentralizedStableCoin is ERC20Burnable, Ownable {
     error decentralizedStableCoin__NotZeroAddress();
 
     //In the constructor we pass the name of the stable coin and its symbol
-    constructor() ERC20("decentralizedStableCoin", "DSC") {}
+    constructor() ERC20("DegenDev", "DD") {}
 
     //The onlyOwner modifier comes from the Ownable contract we inherit from
     function burn(uint256 _amount) public override onlyOwner {
@@ -37,10 +37,7 @@ contract decentralizedStableCoin is ERC20Burnable, Ownable {
         super.burn(_amount);
     }
 
-    function mint(
-        address _to,
-        uint256 _amount
-    ) external onlyOwner returns (bool) {
+    function mint(address _to, uint256 _amount) external onlyOwner returns (bool) {
         //Cannot mint stable coins to the 0x000... address or the disposal address
         if (_to == address(0)) {
             revert decentralizedStableCoin__NotZeroAddress();
