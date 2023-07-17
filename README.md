@@ -1,5 +1,7 @@
 # Defi Stable Coin
 
+**Etherscan Link**: https://sepolia.etherscan.io/address/0x0bcd78eac4c55ce6f64b37db2b45abad5ad37e28#writeContract
+
 ## Introduction
 
 This Decentralized Stable Coin (DSC) is a robust and decentralized stable coin implementation built on Ethereum. DSC is algorithmically minted and is collateralized by a combination of exogenous digital assets, specifically Ether (ETH) and Bitcoin (BTC). The DSC token is pegged to the US Dollar for stability. 
